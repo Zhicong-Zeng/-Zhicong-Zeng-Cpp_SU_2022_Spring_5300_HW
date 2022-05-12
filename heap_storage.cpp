@@ -122,7 +122,8 @@ RecordIDs *SlottedPage::ids(void)
     for (RecordID record_id = 1; record_id <= this->num_records; record_id++)
     {
         get_header(size, loc, record_id);
-        if (loc != 0){
+        if (loc != 0)
+        {
             record_ids->push_back(record_id);
         }
     }
@@ -213,15 +214,15 @@ void *SlottedPage::address(u16 offset)
     return (void *)((char *)this->block.get_data() + offset);
 }
 
-//Already constructed
-// u16 SlottedPage::size() {
-// }
+// Already constructed
+//  u16 SlottedPage::size() {
+//  }
 
 /**
  * @class HeapFile - heap file implementation of DbFile
  *
  * Heap file organization. Built on top of Berkeley DB RecNo file. There is one of our
-        database blocks for each Berkeley DB record in the RecNo file. 
+        database blocks for each Berkeley DB record in the RecNo file.
         In this way we are using Berkeley DB
         for buffer management and file management.
         Uses SlottedPage for storing records within blocks.
@@ -335,8 +336,9 @@ void HeapFile::db_open(uint flags)
 // HeapTable constructor
 // Just size. Heapfile doesn't contians DB_BLOCK_SIZE
 HeapTable::HeapTable(Identifier table_name, ColumnNames column_names,
-ColumnAttributes column_attributes) : DbRelation(table_name, column_names,
-column_attributes),file(table_name) {}
+                     ColumnAttributes column_attributes) : DbRelation(table_name, column_names,
+                                                                      column_attributes),
+                                                           file(table_name) {}
 
 // Execute: CREATE TABLE <table_name> ( <columns> )
 // Is not responsible for metadata storage or validation.
@@ -423,7 +425,8 @@ Handles *HeapTable::select()
         RecordIDs *record_ids = block->ids();
         for (auto const &record_id : *record_ids)
         {
-            handles->push_back(Handle(block_id, record_id));
+            if (selected(handle, where))
+                handles->push_back(Handle(block_id, record_id));
         }
         delete record_ids;
         delete block;
@@ -476,6 +479,8 @@ ValueDict *HeapTable::project(Handle handle, const ColumnNames *column_names)
     ValueDict *result = new ValueDict();
     for (auto const &column_name : *column_names)
     {
+        if (row->find(column_name) == row->end())
+            throw DbRelationError("table does not have column named '" + column_name + "'");
         (*result)[column_name] = (*row)[column_name];
     }
     delete data;
@@ -545,12 +550,18 @@ Dbt *HeapTable::marshal(const ValueDict *row)
         Value value = column->second;
         if (ca.get_data_type() == ColumnAttribute::DataType::INT)
         {
+            if (offset + 4 > DbBlock::BLOCK_SZ - 4)
+                throw DbRelationError("row too big to marshal");
             *(int32_t *)(bytes + offset) = value.n;
             offset += sizeof(int32_t);
         }
         else if (ca.get_data_type() == ColumnAttribute::DataType::TEXT)
         {
-            uint size = value.s.length();
+            u_long size = value.s.length();
+            if (size > UINT16_MAX)
+                throw DbRelationError("text field too long to marshal");
+            if (offset + 2 + size > DbBlock::BLOCK_SZ)
+                throw DbRelationError("row too big to marshal");
             *(u16 *)(bytes + offset) = size;
             offset += sizeof(u16);
             memcpy(bytes + offset, value.s.c_str(), size); // assume ascii for now
@@ -590,9 +601,9 @@ ValueDict *HeapTable::unmarshal(Dbt *data)
             u16 size = *(u16 *)(bytes + offset);
             offset += sizeof(u16);
             char buffer[size];
-            memcpy(buffer, bytes + offset, size);//Idea from marshal
+            memcpy(buffer, bytes + offset, size); // Idea from marshal
             buffer[size] = (char)0;
-            value.s = string(buffer);  // assume ascii for now
+            value.s = string(buffer); // assume ascii for now
             offset += size;
         }
         else
@@ -785,3 +796,147 @@ bool test_slotted_page()
     delete ids;
     return true;
 }
+
+// /**
+//  * Testing function for SlottedPage.
+//  * @return true if testing succeeded, false otherwise
+//  */
+// bool test_slotted_page() {
+//     // construct one
+//     char blank_space[DbBlock::BLOCK_SZ];
+//     Dbt block_dbt(blank_space, sizeof(blank_space));
+//     SlottedPage slot(block_dbt, 1, true);
+
+//     // add a record
+//     char rec1[] = "hello";
+//     Dbt rec1_dbt(rec1, sizeof(rec1));
+//     RecordID id = slot.add(&rec1_dbt);
+//     if (id != 1)
+//         return assertion_failure("add id 1");
+
+//     // get it back
+//     Dbt *get_dbt = slot.get(id);
+//     string expected(rec1, sizeof(rec1));
+//     string actual((char *) get_dbt->get_data(), get_dbt->get_size());
+//     delete get_dbt;
+//     if (expected != actual)
+//         return assertion_failure("get 1 back " + actual);
+
+//     // add another record and fetch it back
+//     char rec2[] = "goodbye";
+//     Dbt rec2_dbt(rec2, sizeof(rec2));
+//     id = slot.add(&rec2_dbt);
+//     if (id != 2)
+//         return assertion_failure("add id 2");
+
+//     // get it back
+//     get_dbt = slot.get(id);
+//     expected = string(rec2, sizeof(rec2));
+//     actual = string((char *) get_dbt->get_data(), get_dbt->get_size());
+//     delete get_dbt;
+//     if (expected != actual)
+//         return assertion_failure("get 2 back " + actual);
+
+//     // test put with expansion (and slide and ids)
+//     char rec1_rev[] = "something much bigger";
+//     rec1_dbt = Dbt(rec1_rev, sizeof(rec1_rev));
+//     slot.put(1, rec1_dbt);
+//     // check both rec2 and rec1 after expanding put
+//     get_dbt = slot.get(2);
+//     expected = string(rec2, sizeof(rec2));
+//     actual = string((char *) get_dbt->get_data(), get_dbt->get_size());
+//     delete get_dbt;
+//     if (expected != actual)
+//         return assertion_failure("get 2 back after expanding put of 1 " + actual);
+//     get_dbt = slot.get(1);
+//     expected = string(rec1_rev, sizeof(rec1_rev));
+//     actual = string((char *) get_dbt->get_data(), get_dbt->get_size());
+//     delete get_dbt;
+//     if (expected != actual)
+//         return assertion_failure("get 1 back after expanding put of 1 " + actual);
+
+//     // test put with contraction (and slide and ids)
+//     rec1_dbt = Dbt(rec1, sizeof(rec1));
+//     slot.put(1, rec1_dbt);
+//     // check both rec2 and rec1 after contracting put
+//     get_dbt = slot.get(2);
+//     expected = string(rec2, sizeof(rec2));
+//     actual = string((char *) get_dbt->get_data(), get_dbt->get_size());
+//     delete get_dbt;
+//     if (expected != actual)
+//         return assertion_failure("get 2 back after contracting put of 1 " + actual);
+//     get_dbt = slot.get(1);
+//     expected = string(rec1, sizeof(rec1));
+//     actual = string((char *) get_dbt->get_data(), get_dbt->get_size());
+//     delete get_dbt;
+//     if (expected != actual)
+//         return assertion_failure("get 1 back after contracting put of 1 " + actual);
+
+//     // test del (and ids)
+//     RecordIDs *id_list = slot.ids();
+//     if (id_list->size() != 2 || id_list->at(0) != 1 || id_list->at(1) != 2)
+//         return assertion_failure("ids() with 2 records");
+//     delete id_list;
+//     slot.del(1);
+//     id_list = slot.ids();
+//     if (id_list->size() != 1 || id_list->at(0) != 2)
+//         return assertion_failure("ids() with 1 record remaining");
+//     delete id_list;
+//     get_dbt = slot.get(1);
+//     if (get_dbt != nullptr)
+//         return assertion_failure("get of deleted record was not null");
+
+//     // try adding something too big
+//     rec2_dbt = Dbt(nullptr, DbBlock::BLOCK_SZ - 10); // too big, but only because we have a record in there
+//     try {
+//         slot.add(&rec2_dbt);
+//         return assertion_failure("failed to throw when add too big");
+//     } catch (const DbBlockNoRoomError &exc) {
+//         // test succeeded - this is the expected path
+//     } catch (...) {
+//         // Note that this won't catch segfault signals -- but in that case we also know the test failed
+//         return assertion_failure("wrong type thrown when add too big");
+//     }
+
+//     // more volume
+//     string gettysburg = "Four score and seven years ago our fathers brought forth on this continent, a new nation, conceived in Liberty, and dedicated to the proposition that all men are created equal.";
+//     int32_t n = -1;
+//     uint16_t text_length = gettysburg.size();
+//     uint total_size = sizeof(n) + sizeof(text_length) + text_length;
+//     char *data = new char[total_size];
+//     *(int32_t *) data = n;
+//     *(uint16_t *) (data + sizeof(n)) = text_length;
+//     memcpy(data + sizeof(n) + sizeof(text_length), gettysburg.c_str(), text_length);
+//     Dbt dbt(data, total_size);
+//     vector<SlottedPage> page_list;
+//     BlockID block_id = 1;
+//     Dbt slot_dbt(new char[DbBlock::BLOCK_SZ], DbBlock::BLOCK_SZ);
+//     slot = SlottedPage(slot_dbt, block_id++, true);
+//     for (int i = 0; i < 10000; i++) {
+//         try {
+//             slot.add(&dbt);
+//         } catch (DbBlockNoRoomError &exc) {
+//             page_list.push_back(slot);
+//             slot_dbt = Dbt(new char[DbBlock::BLOCK_SZ], DbBlock::BLOCK_SZ);
+//             slot = SlottedPage(slot_dbt, block_id++, true);
+//             slot.add(&dbt);
+//         }
+//     }
+//     page_list.push_back(slot);
+//     for (const auto &slot : page_list) {
+//         RecordIDs *ids = slot.ids();
+//         for (RecordID id : *ids) {
+//             Dbt *record = slot.get(id);
+//             if (record->get_size() != total_size)
+//                 return assertion_failure("more volume wrong size", block_id - 1, id);
+//             void *stored = record->get_data();
+//             if (memcmp(stored, data, total_size) != 0)
+//                 return assertion_failure("more volume wrong data", block_id - 1, id);
+//             delete record;
+//         }
+//         delete ids;
+//         delete[] (char *) slot.block.get_data();  // this is why we need to be a friend--just convenient
+//     }
+//     delete[] data;
+//     return true;
+// }

@@ -60,9 +60,15 @@ int main(int argc, char *argv[])
             break;
         if (sql.length() < 1)
             continue;
-        if (sql == "test") {
+        if (sql == "test")
+        {
             cout << "test_slotted_page: " << (test_slotted_page() ? "Pass" : "Failed") << endl;
             cout << "test_heap_storage: " << (test_heap_storage() ? "Pass" : "Failed") << endl;
+            continue;
+        }
+        if (query == "test2" || query == "sqlexec" || query == "test sqlexec")
+        {
+            cout << "Testing SQL executor:\n " << (test_sqlexec() ? "Tests passed" : "Tests failed") << endl;
             continue;
         }
 
@@ -263,7 +269,7 @@ string printExpression(const Expr *expr)
         return str;
     }
 
-     if (expr->alias != NULL)
+    if (expr->alias != NULL)
         str += string(" AS ") + expr->alias;
     return str;
 }
