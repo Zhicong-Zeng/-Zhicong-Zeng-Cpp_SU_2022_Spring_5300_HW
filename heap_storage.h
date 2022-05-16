@@ -27,7 +27,8 @@
             etc.
  *
  */
-class SlottedPage : public DbBlock {
+class SlottedPage : public DbBlock
+{
 public:
     SlottedPage(Dbt &block, BlockID block_id, bool is_new = false);
 
@@ -80,7 +81,8 @@ protected:
         for buffer management and file management.
         Uses SlottedPage for storing records within blocks.
  */
-class HeapFile : public DbFile {
+class HeapFile : public DbFile
+{
 public:
     HeapFile(std::string name) : DbFile(name), dbfilename(""), last(0), closed(true), db(_DB_ENV, 0) {}
 
@@ -125,7 +127,8 @@ protected:
  * @class HeapTable - Heap storage engine (implementation of DbRelation)
  */
 
-class HeapTable : public DbRelation {
+class HeapTable : public DbRelation
+{
 public:
     HeapTable(Identifier table_name, ColumnNames column_names, ColumnAttributes column_attributes);
 
@@ -177,4 +180,3 @@ protected:
 
 bool test_heap_storage();
 bool test_slotted_page();
-

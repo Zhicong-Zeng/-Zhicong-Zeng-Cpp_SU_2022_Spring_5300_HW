@@ -66,9 +66,12 @@ int main(int argc, char *argv[])
             cout << "test_heap_storage: " << (test_heap_storage() ? "Pass" : "Failed") << endl;
             continue;
         }
-        if (query == "test2" || query == "sqlexec" || query == "test sqlexec")
-        {
-            cout << "Testing SQL executor:\n " << (test_sqlexec() ? "Tests passed" : "Tests failed") << endl;
+        if (query == "test2" || query == "test table") {
+            cout << "Testing SQL executor:\n " << (test_sqlexec_table() ? "Tests passed" :  "Tests failed") << endl;
+            continue;
+        }
+        if (query == "test3" || query == "test index") {
+            cout << "Testing SQL executor:\n " << (test_sqlexec_index() ? "Tests passed" :  "Tests failed") << endl;
             continue;
         }
 
