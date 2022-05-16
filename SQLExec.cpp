@@ -12,8 +12,9 @@ using namespace hsql;
 
 // define static data
 Tables *SQLExec::tables = nullptr;
+Indices *SQLExec::indices = nullptr;
 
-// make query result be printable // Nothing to do
+// make query result be printable
 ostream &operator<<(ostream &out, const QueryResult &qres)
 {
     if (qres.column_names != nullptr)
@@ -37,6 +38,9 @@ ostream &operator<<(ostream &out, const QueryResult &qres)
                     break;
                 case ColumnAttribute::TEXT:
                     out << "\"" << value.s << "\"";
+                    break;
+                case ColumnAttribute::BOOLEAN:
+                    out << (value.n == 0 ? "false" : "true");
                     break;
                 default:
                     out << "???";
@@ -75,10 +79,13 @@ QueryResult::~QueryResult()
 QueryResult *SQLExec::execute(const SQLStatement *statement)
 {
     // This object is a global variable to store the table
+    // Should need to initiaize the indices
     if (SQLExec::tables == nullptr)
     {
         SQLExec::tables = new Tables();
+        SQLExec::indices = new Indices();
     }
+
     try
     {
         // There are many types of statements but we just need these three
@@ -114,21 +121,27 @@ void SQLExec::column_definition(const ColumnDefinition *col, Identifier &column_
         column_attribute.set_data_type(ColumnAttribute::TEXT);
         break;
     default:
-        throw SQLExecError("unrecogniaed ColumnAttribute type");
+        throw SQLExecError("unrecognized ColumnAttribute type");
     }
 }
 
 // recursive decent into the AST
-// There should have index and table according to milestone3 python
-// We just implement create table now
 QueryResult *SQLExec::create(const CreateStatement *statement)
 {
-    // Create a table with given table_name (string) and table_element_list (from parse tree).
-    if (statement->type != hsql::CreateStatement::kTable)
+    switch (statement->type)
     {
-        throw SQLExecError("unrecogniaed Create type");
+    case CreateStatement::kTable:
+        return create_table(statement);
+    case CreateStatement::kIndex:
+        return create_index(statement);
+    default:
+        return new QueryResult("unrecognized Create type");
     }
+}
 
+// Case create table
+QueryResult *SQLExec::create_table(const CreateStatement *statement)
+{
     // vector<Identifier> ColumnNames;
     // vector<ColumnAttribute> ColumnAttributes;
 
@@ -216,29 +229,81 @@ QueryResult *SQLExec::create(const CreateStatement *statement)
     return new QueryResult("created " + table_name);
 }
 
-// DROP ...
+// Create index
+// table_name index_name column_name seq_in_index index_type is_unique
+QueryResult *SQLExec::create_index(const CreateStatement *statement)
+{
+    Identifier tableName = statement->tableName;
+    Identifier indexName = statement->indexName;
+
+    // insert a row for every column in index into _indices
+    ValueDict row;
+    row["table_name"] = Value(tableName);
+    row["index_name"] = Value(indexName);
+    row["index_type"] = Value(statement->indexType);
+    row["is_unique"] = Value(string(statement->indexType) == "BTREE"); // Using BTREE is true, HASH is false
+    int seq = 0;
+    Handles handles;
+    try
+    {
+        // Get indexColumns from indexColumns
+        for (auto const &col_name : *statement->indexColumns)
+        {
+            row["seq_in_index"] = Value(++seq);
+            row["column_name"] = Value(col_name);
+            handles.push_back(SQLExec::indices->insert(&row));
+        }
+        // create index
+        DbIndex &index = SQLExec::indices->get_index(tableName, indexName);
+        index.create();
+    }
+    catch (...)
+    {
+        // delete all the handles if error occurs
+        try
+        {
+            for (auto const &handle : handles)
+                SQLExec::indices->del(handle);
+        }
+        catch (...)
+        {
+        }
+        throw;
+    }
+    return new QueryResult();
+}
+
+// recursive decent into the AST
 QueryResult *SQLExec::drop(const DropStatement *statement)
 {
-    if (statement->type != hsql::DropStatement::kTable)
+    switch (statement->type)
     {
-        return new QueryResult("Cannot drop a schema table!");
+    case DropStatement::kTable:
+        return drop_table(statement);
+    case DropStatement::kIndex:
+        return drop_index(statement);
+    default:
+        return new QueryResult("unrecognized Drop type");
     }
+}
 
-    Identifier table_name = statement->name;
+QueryResult *SQLExec::drop_table(const DropStatement *statement)
+{
+    Identifier name = statement->name;
 
     // Check the table is not a schema table
-    if (table_name == Tables::TABLE_NAME || table_name == Columns::TABLE_NAME)
+    if (name == Tables::TABLE_NAME || name == Columns::TABLE_NAME)
         throw SQLExecError("Cannot drop a schema table!");
 
     // get the table
-    DbRelation &table = SQLExec::tables->get_table(table_name);
+    DbRelation &table = SQLExec::tables->get_table(name);
 
     // remove table
     table.drop();
 
     // remove from _columns schema
     ValueDict where;
-    where["table_name"] = Value(table_name);
+    where["table_name"] = Value(name);
 
     DbRelation &columns = SQLExec::tables->get_table(Columns::TABLE_NAME);
     Handles *handles = columns.select(&where);
@@ -246,12 +311,41 @@ QueryResult *SQLExec::drop(const DropStatement *statement)
     {
         columns.del(handle);
     }
-    delete handles;
 
     // finally, remove from table schema
-    SQLExec::tables->del(*SQLExec::tables->select(&where)->begin()); // expect only one row
+    // SQLExec::tables->del(->begin()); // expect only one row
 
-    return new QueryResult(std::string("dropped") + table_name);
+    Handles *results = SQLExec::tables->select(&where);
+
+    for (auto const &result : *results)
+    {
+        SQLExec::tables->del(result);
+    }
+    delete handles;
+    delete results;
+    return new QueryResult("dropped " + name);
+}
+
+QueryResult *SQLExec::drop_index(const DropStatement *statement)
+{
+    Identifier name = statement->name;
+    Identifier indexName = statement->indexName;
+
+    // drop index
+    DbIndex &index = SQLExec::indices->get_index(name, indexName);
+    index.drop();
+
+    // remove rows from _indices for this index
+    ValueDict where;
+    where["table_name"] = Value(name);
+    where["index_name"] = Value(indexName);
+    Handles *handles = SQLExec::indices->select(&where);
+
+    for (auto const &handle : *handles)
+        SQLExec::indices->del(handle);
+    delete handles;
+
+    return new QueryResult("dropped index " + indexName + " From " + name);
 }
 
 // Check ShowStatement.h
@@ -263,9 +357,8 @@ QueryResult *SQLExec::show(const ShowStatement *statement)
         return show_tables();
     case ShowStatement::kColumns:
         return show_columns(statement);
-    // Implement later
-    // case ShowStatement::kIndex:
-    //     return show_index(statement);
+    case ShowStatement::kIndex:
+        return show_index(statement);
     default:
         throw SQLExecError("unrecognized Show type");
     }
@@ -303,6 +396,7 @@ QueryResult *SQLExec::show_tables()
         {
             rows->push_back(row);
         }
+        delete row;
     }
     delete handles;
     return new QueryResult(column_names, column_attributes, rows, " successfully returned " + to_string(count) + " rows");
@@ -344,8 +438,50 @@ QueryResult *SQLExec::show_columns(const ShowStatement *statement)
     return new QueryResult(column_names, column_attributes, rows, " successfully returned " + to_string(count) + " rows");
 }
 
+// SHOW INDEX FROM goober
+//  table_name index_name column_name seq_in_index index_type is_unique
+//  +----------+----------+----------+----------+----------+----------+
+QueryResult *SQLExec::show_index(const ShowStatement *statement)
+{
+    ColumnNames *column_names = new ColumnNames;
+    ColumnAttributes *column_attributes = new ColumnAttributes;
+
+    column_names->push_back("table_name");
+    column_attributes->push_back(ColumnAttribute(ColumnAttribute::TEXT));
+
+    column_names->push_back("index_name");
+    column_attributes->push_back(ColumnAttribute(ColumnAttribute::TEXT));
+
+    column_names->push_back("column_name");
+    column_attributes->push_back(ColumnAttribute(ColumnAttribute::TEXT));
+
+    column_names->push_back("seq_in_index");
+    column_attributes->push_back(ColumnAttribute(ColumnAttribute::INT));
+
+    column_names->push_back("index_type");
+    column_attributes->push_back(ColumnAttribute(ColumnAttribute::TEXT));
+
+    column_names->push_back("is_unique");
+    column_attributes->push_back(ColumnAttribute(ColumnAttribute::BOOLEAN));
+
+    ValueDict where;
+    where["table_name"] = Value(string(statement->tableName));
+    Handles *handles = SQLExec::indices->select(&where);
+    u_long n = handles->size();
+
+    ValueDicts *rows = new ValueDicts;
+    for (auto const &handle : *handles)
+    {
+        ValueDict *row = SQLExec::indices->project(handle, column_names);
+        rows->push_back(row);
+    }
+    delete handles;
+    return new QueryResult(column_names, column_attributes, rows,
+                           "successfully returned " + to_string(n) + " rows");
+}
+
 // Test Function for SQLExec class
-bool test_sqlexec()
+bool test_sqlexec_table()
 {
     const int num_queries = 11;
     const string queries[num_queries] = {"show tables",
@@ -371,6 +507,97 @@ bool test_sqlexec()
                                          "DROP TABLE foo   dropped foo",
                                          "SHOW TABLES  table_name  successfully returned 0 rows",
                                          "SHOW COLUMNS FROM footable_name column_name data_type  successfully returned 0 rows"};
+
+    for (int i = 0; i < num_queries; i++)
+    {
+        SQLParserResult *result = SQLParser::parseSQLString(queries[i]);
+        if (result->isValid())
+        {
+            // if result is valid, pass result to our own execute function
+            for (long unsigned int j = 0; j < result->size(); j++)
+            {
+                const SQLStatement *statement = result->getStatement(j);
+                try
+                {
+                    string str1 = test_logic((const SQLStatement *)statement);
+                    string str2 = str1;
+                    str2.erase(remove_if(str2.begin(), str2.end(), [](char c)
+                                         { return !(isalnum(c)); }),
+                               str2.end());
+                    string str3 = results[i];
+                    str3.erase(remove_if(str3.begin(), str3.end(), [](char c)
+                                         { return !(isalnum(c)); }),
+                               str3.end());
+                    if (str2 == str3)
+                    {
+                        cout << queries[i] << endl;
+                        cout << str1 << endl;
+                    }
+                    else
+                    {
+                        cout << "Unexpected query  " << queries[i] << endl;
+                        cout << "query_result  " << str2 << endl;
+                        cout << "results[i]  " << str3 << endl;
+                        passed = false;
+                    }
+                }
+                catch (SQLExecError &e)
+                {
+                    cout << "Error: " << e.what() << endl;
+                }
+            }
+        }
+        else
+        {
+            passed = false;
+            cout << "Invalid SQL" << endl;
+        }
+        delete result;
+    }
+    return passed;
+}
+
+// Test Function for SQLExec class
+bool test_sqlexec_index()
+{
+    const int num_queries = 18;
+    const string queries[num_queries] = {"create table goober (x integer, y integer, z integer)",
+                                         "show tables",
+                                         "show columns from goober",
+                                         "create index fx on goober (x,y)",
+                                         "show index from goober",
+                                         "drop index fx from goober",
+                                         "show index from goober",
+                                         "create index fx on goober (x)",
+                                         "show index from goober",
+                                         "create index fx on goober (y,z)",
+                                         "show index from goober",
+                                         "create index fyz on goober (y,z)",
+                                         "show index from goober",
+                                         "drop index fx from goober",
+                                         "show index from goober",
+                                         "drop index fyz from goober",
+                                         "show index from goober",
+                                         "drop table goober"};
+    bool passed = true;
+    const string results[num_queries] = {"CREATE TABLE goober x INT yINT zINT created goober",
+                                         "SHOW TABLES table_name goober successfully returned 1 rows",
+                                         "SHOW COLUMNS FROM goober table_name column_name data_type goober x INT goober y INT goober z INT successfully returned 3 rows",
+                                         "CREATE INDEX fx ON goober USING BTREE fx ON goober USING BTREE xy",
+                                         "SHOW INDEX FROM goober table_name index_name column_name seq_in_index index_type is_unique goober fx x 1 BTREE true goober fx y 2 BTREE true successfully returned 2 rows",
+                                         "DROP goober dropped index fx From goober",
+                                         "SHOW INDEX FROM goober table_name index_name column_name seq_in_index index_type is_unique successfully returned 0 rows",
+                                         "CREATE INDEX fx ON goober USING BTREE fx ON goober USING BTREE x",
+                                         "SHOW INDEX FROM goober table_name index_name column_name seq_in_index index_type is_unique goober fx x 1 BTREE true successfully returned 1 rows",
+                                         "CREATE INDEX fx ON goober USING BTREE (y, z) Error: DbRelationError: duplicate index goober fx",
+                                         "SHOW INDEX FROM goober table_name index_name column_name seq_in_index index_type is_unique goober fx x 1 BTREE true successfully returned 1 rows",
+                                         "CREATE INDEX fyz ON goober USING BTREE fyz ON goober USING BTREE yz",
+                                         "SHOW INDEX FROM goober table_name index_name column_name seq_in_index index_type is_unique goober fx x 1 BTREE true goober fyz y 1 BTREE true goober fyz z 2 BTREE true successfully returned 3 rows",
+                                         "DROP goober dropped index fx From goober",
+                                         "SHOW INDEX FROM goober table_name index_name column_name seq_in_index index_type is_unique goober fyz y 1 BTREE true goober fyz z 2 BTREE true successfully returned 2 rows",
+                                         "DROP goober dropped index fyz From goober",
+                                         "SHOW INDEX FROM goober table_name index_name column_name seq_in_index index_type is_unique successfully returned 0 rows",
+                                         "DROP TABLE goober dropped goober"};
 
     for (int i = 0; i < num_queries; i++)
     {
