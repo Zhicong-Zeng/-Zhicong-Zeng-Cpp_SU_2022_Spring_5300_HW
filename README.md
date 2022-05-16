@@ -3,7 +3,7 @@ CPSC5300/4300 at Seattle U, Spring 2022
 
 ## Run Environment
 Linux bash.
-Need to establish Bekerley DB 
+Need to establish Bekerley DB.
 Use Makefile.
 
 Usage (argument is database directory):
